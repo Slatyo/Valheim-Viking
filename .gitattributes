@@ -1,0 +1,50 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# C# files
+*.cs text diff=csharp
+
+# Unity files
+*.meta text
+*.unity text
+*.prefab text
+*.asset text
+*.mat text
+*.anim text
+*.controller text
+
+# Images
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+
+# Audio
+*.wav binary
+*.mp3 binary
+*.ogg binary
+
+# Fonts
+*.ttf binary
+*.otf binary
+
+# Compiled
+*.dll binary
+*.exe binary
+*.pdb binary
+
+# Archives
+*.zip binary
+*.7z binary
+*.rar binary
+
+# Documents
+*.pdf binary
+
+# Force batch scripts to always use CRLF
+*.bat text eol=crlf
+
+# Force bash scripts to always use LF
+*.sh text eol=lf

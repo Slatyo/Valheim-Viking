@@ -1,0 +1,12 @@
+{
+    "name": "Viking",
+    "author": "Slatyo",
+    "version_number": "1.0.0",
+    "website_url": "https://github.com/Slatyo/Valheim-Viking",
+    "description": "Talent tree and ability system - server-authoritative player progression with passive talents and active abilities",
+    "dependencies": [
+        "denikson-BepInExPack_Valheim-5.4.2333",
+        "ValheimModding-Jotunn-2.26.1",
+        "Slatyo-Vital-1.0.0"
+    ]
+}
