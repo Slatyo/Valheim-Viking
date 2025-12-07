@@ -67,6 +67,9 @@ namespace Viking.UI
             // Subscribe to close event
             _frame.OnCloseClicked += Hide;
 
+            // Register with VeneerWindowManager for proper visibility tracking
+            _frame.RegisterWithManager();
+
             // Position in center-left
             var rect = _frame.GetComponent<RectTransform>();
             rect.anchorMin = new Vector2(0.5f, 0.5f);
@@ -603,7 +606,15 @@ namespace Viking.UI
         {
             if (!_statTexts.TryGetValue(textId, out var text)) return;
 
-            float value = PrimeAPI.Get(_player, statId);
+            // For resource stats, use the actual game values (vanilla + Prime modifiers via patches)
+            // rather than Prime's internal calculation (which uses an arbitrary base value)
+            float value = statId switch
+            {
+                "MaxHealth" => _player.GetMaxHealth(),
+                "MaxStamina" => _player.GetMaxStamina(),
+                "MaxEitr" => _player.GetMaxEitr(),
+                _ => PrimeAPI.Get(_player, statId)
+            };
 
             string formatted;
             if (isPercent)

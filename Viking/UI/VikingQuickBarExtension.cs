@@ -1,8 +1,8 @@
-using UnityEngine;
-using UnityEngine.UI;
+using Veneer.Components.Base;
 using Veneer.Components.Primitives;
+using Veneer.Core;
 using Veneer.Extensions;
-using Veneer.Theme;
+using Veneer.Vanilla.Replacements;
 using Viking.Integration;
 
 namespace Viking.UI
@@ -15,71 +15,44 @@ namespace Viking.UI
         public int Priority => 100;
         public string ExtensionId => "viking.character_button";
 
-        private GameObject _characterButton;
+        private VeneerButton _button;
 
         public void OnQuickBarCreated(QuickBarContext context)
         {
             if (context?.ButtonContainer == null) return;
 
-            // Create Character button
-            _characterButton = new GameObject("VikingCharacterBtn", typeof(RectTransform));
-            _characterButton.transform.SetParent(context.ButtonContainer, false);
+            _button = VeneerQuickBar.CreateQuickBarButton(
+                context.ButtonContainer,
+                "Character",
+                () => VeneerIntegration.ToggleCharacterWindow()
+            );
 
-            // Add layout element
-            var layout = _characterButton.AddComponent<LayoutElement>();
-            layout.preferredWidth = 32;
-            layout.preferredHeight = 32;
+            // Subscribe to window manager events to update button style
+            VeneerWindowManager.OnWindowOpened += OnWindowStateChanged;
+            VeneerWindowManager.OnWindowClosed += OnWindowStateChanged;
 
-            // Add background
-            var bg = _characterButton.AddComponent<Image>();
-            bg.color = VeneerColors.BackgroundLight;
-
-            // Add button
-            var button = _characterButton.AddComponent<Button>();
-            button.targetGraphic = bg;
-            button.onClick.AddListener(OnCharacterButtonClicked);
-
-            // Add hover color change
-            var colors = button.colors;
-            colors.normalColor = VeneerColors.BackgroundLight;
-            colors.highlightedColor = VeneerColors.BackgroundSolid;
-            colors.pressedColor = VeneerColors.Accent;
-            button.colors = colors;
-
-            // Add text label
-            var textGo = new GameObject("Label", typeof(RectTransform));
-            textGo.transform.SetParent(_characterButton.transform, false);
-
-            var textRect = textGo.GetComponent<RectTransform>();
-            textRect.anchorMin = Vector2.zero;
-            textRect.anchorMax = Vector2.one;
-            textRect.offsetMin = Vector2.zero;
-            textRect.offsetMax = Vector2.zero;
-
-            var text = textGo.AddComponent<Text>();
-            text.text = "Character";
-            text.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-            text.fontSize = 11;
-            text.fontStyle = FontStyle.Bold;
-            text.color = VeneerColors.TextGold;
-            text.alignment = TextAnchor.MiddleCenter;
-            text.raycastTarget = false;
-
+            UpdateButtonStyle();
             Plugin.Log.LogInfo("Viking quickbar button added");
         }
 
         public void OnQuickBarDestroyed()
         {
-            if (_characterButton != null)
-            {
-                Object.Destroy(_characterButton);
-                _characterButton = null;
-            }
+            VeneerWindowManager.OnWindowOpened -= OnWindowStateChanged;
+            VeneerWindowManager.OnWindowClosed -= OnWindowStateChanged;
+            _button = null;
         }
 
-        private void OnCharacterButtonClicked()
+        private void OnWindowStateChanged(VeneerElement window)
         {
-            VeneerIntegration.ToggleCharacterWindow();
+            UpdateButtonStyle();
+        }
+
+        private void UpdateButtonStyle()
+        {
+            if (_button == null) return;
+
+            bool isVisible = VeneerIntegration.IsCharacterWindowVisible();
+            _button.SetStyle(isVisible ? ButtonStyle.TabActive : ButtonStyle.Tab);
         }
     }
 }

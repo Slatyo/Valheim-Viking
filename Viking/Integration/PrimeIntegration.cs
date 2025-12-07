@@ -365,6 +365,7 @@ namespace Viking.Integration
             if (node.Modifiers == null || node.Modifiers.Count == 0) return;
 
             var container = EntityManager.Instance.GetOrCreate(player);
+            Plugin.Log.LogDebug($"[Viking] ApplyNodeModifiers: Player {player.GetPlayerName()}, Node {node.Id}, Container exists: {container != null}");
 
             foreach (var mod in node.Modifiers)
             {
@@ -395,6 +396,10 @@ namespace Viking.Integration
                 {
                     // Update value for additional rank
                     existing.Value += mod.Value;
+                    if (mod.Stat == "MaxHealth" || mod.Stat == "MaxStamina")
+                    {
+                        Plugin.Log.LogDebug($"[Viking] Updated modifier {modifierId}: {mod.Stat} now = {existing.Value}");
+                    }
                 }
                 else
                 {
@@ -405,6 +410,10 @@ namespace Viking.Integration
                         Order = ModifierOrder.Default
                     };
                     container.AddModifier(primeModifier);
+                    if (mod.Stat == "MaxHealth" || mod.Stat == "MaxStamina")
+                    {
+                        Plugin.Log.LogDebug($"[Viking] Added modifier {modifierId}: {mod.Stat} {primeType} {mod.Value * ranksAdded}");
+                    }
                 }
             }
         }
@@ -463,7 +472,13 @@ namespace Viking.Integration
             if (player == null) return;
 
             var data = VikingDataStore.Get(player);
-            if (data == null) return;
+            if (data == null)
+            {
+                Plugin.Log.LogDebug($"[Viking] ReapplyAllModifiers: No data for player {player.GetPlayerName()}");
+                return;
+            }
+
+            Plugin.Log.LogInfo($"[Viking] ReapplyAllModifiers: Player {player.GetPlayerName()}, {data.AllocatedNodes.Count} nodes allocated");
 
             // Remove existing Viking modifiers and abilities
             RemoveAllVikingModifiers(player);

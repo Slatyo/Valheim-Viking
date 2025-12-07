@@ -255,6 +255,14 @@ namespace Viking.Integration
         }
 
         /// <summary>
+        /// Check if the character window is visible.
+        /// </summary>
+        public static bool IsCharacterWindowVisible()
+        {
+            return _characterWindow != null && _characterWindow.IsVisible;
+        }
+
+        /// <summary>
         /// Create the talent tree window.
         /// </summary>
         private static void CreateTalentTreeWindow()
