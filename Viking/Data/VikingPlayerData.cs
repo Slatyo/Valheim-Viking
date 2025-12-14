@@ -2,13 +2,13 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using SimpleJson;
-using Vital.Data;
+using State;
 
 namespace Viking.Data
 {
     /// <summary>
     /// Persistent player data for the Viking talent system.
-    /// Stored via VitalDataStore and persists with world saves as JSON.
+    /// Stored via State.Store and persists with world saves as JSON.
     /// </summary>
     public class VikingPlayerData : IPlayerData
     {

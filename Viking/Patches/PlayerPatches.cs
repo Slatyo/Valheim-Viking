@@ -1,18 +1,23 @@
 using HarmonyLib;
+using State;
 using Viking.Core;
+using Viking.Data;
 using Viking.Integration;
 
 namespace Viking.Patches
 {
     /// <summary>
-    /// Harmony patches for player lifecycle events and input handling.
+    /// Harmony patches for player lifecycle events, input handling, and equipment persistence.
     /// </summary>
     [HarmonyPatch]
     public static class PlayerPatches
     {
+        private static bool _equipmentSyncSubscribed = false;
+
+        #region Player Lifecycle
 
         /// <summary>
-        /// Player spawned - reapply Viking talent modifiers.
+        /// Player spawned - create EquipmentInventory, EquipmentStorage, reapply modifiers, and setup equipment load.
         /// </summary>
         [HarmonyPatch(typeof(Player), nameof(Player.OnSpawned))]
         [HarmonyPostfix]
@@ -21,28 +26,116 @@ namespace Viking.Patches
             // Only on local player
             if (__instance != Player.m_localPlayer) return;
 
+            // Create EquipmentInventory component (must be before EquipmentStorage)
+            EquipmentInventory.Create(__instance);
+
+            // Create EquipmentStorage component
+            EquipmentStorage.Create(__instance);
+
             // Reapply all Viking talent modifiers
             if (Plugin.HasPrime)
             {
                 PrimeIntegration.ReapplyAllModifiers(__instance);
                 Plugin.Log.LogInfo($"Reapplied talent modifiers for {__instance.GetPlayerName()}");
             }
+
+            // Subscribe to State data sync to load equipment after sync completes
+            if (!_equipmentSyncSubscribed)
+            {
+                Store.OnDataSynced += OnDataSynced;
+                _equipmentSyncSubscribed = true;
+            }
         }
 
-        // NOTE: EquipmentStorage system is DISABLED
-        //
-        // The concept was to move equipped items to a separate inventory to free up main inventory slots.
-        // However, Valheim's save system saves items FROM the inventory list - if we remove items,
-        // they don't get saved by vanilla and are lost on reload.
-        //
-        // To implement this properly would require:
-        // 1. Override Player.Save to include equipment storage items
-        // 2. Override Player.Load to restore them
-        // 3. Handle all edge cases (death, teleportation, etc.)
-        //
-        // For now, equipment stays in main inventory (vanilla behavior).
-        // CharacterWindow reads equipment directly from Humanoid fields (m_helmetItem, etc.)
-        // which already works correctly.
+        /// <summary>
+        /// Called when Vital syncs data to client.
+        /// </summary>
+        private static void OnDataSynced(string moduleId)
+        {
+            if (moduleId != VikingDataStore.EQUIPMENT_MODULE_ID) return;
+
+            var player = Player.m_localPlayer;
+            if (player == null) return;
+
+            var storage = player.GetComponent<EquipmentStorage>();
+            if (storage != null)
+            {
+                storage.Load(player);
+            }
+        }
+
+        /// <summary>
+        /// Save equipment before player saves.
+        /// </summary>
+        [HarmonyPatch(typeof(Player), nameof(Player.Save))]
+        [HarmonyPrefix]
+        public static void Player_Save_Prefix(Player __instance)
+        {
+            // Only on server
+            if (!ZNet.instance.IsServer()) return;
+
+            var storage = __instance.GetComponent<EquipmentStorage>();
+            if (storage != null)
+            {
+                storage.Save(__instance);
+            }
+        }
+
+        #endregion
+
+        #region Death Handling (Keep Items)
+
+        /// <summary>
+        /// Save equipment before tombstone creation and prevent items from going to tombstone.
+        /// </summary>
+        [HarmonyPatch(typeof(Player), nameof(Player.CreateTombStone))]
+        [HarmonyPrefix]
+        public static void Player_CreateTombStone_Prefix(Player __instance)
+        {
+            // Save equipment before death
+            if (ZNet.instance.IsServer())
+            {
+                var storage = __instance.GetComponent<EquipmentStorage>();
+                if (storage != null)
+                {
+                    storage.Save(__instance);
+                    Plugin.Log.LogInfo($"Saved equipment before death for {__instance.GetPlayerName()}");
+                }
+            }
+
+            // Clear main inventory (bag) so nothing goes to tombstone
+            // Items are preserved in State.Store and will be restored on respawn
+            // Note: EquipmentInventory is NOT cleared here - it's saved separately
+            var inventory = __instance.GetInventory();
+            if (inventory != null)
+            {
+                inventory.RemoveAll();
+                Plugin.Log.LogDebug("Cleared bag inventory before tombstone creation");
+            }
+        }
+
+        /// <summary>
+        /// Restore equipment after respawn.
+        /// </summary>
+        [HarmonyPatch(typeof(Player), nameof(Player.OnRespawn))]
+        [HarmonyPostfix]
+        public static void Player_OnRespawn_Postfix(Player __instance)
+        {
+            // Only on local player
+            if (__instance != Player.m_localPlayer) return;
+
+            // Load equipment from State.Store
+            var storage = __instance.GetComponent<EquipmentStorage>();
+            if (storage != null)
+            {
+                storage.Load(__instance);
+                Plugin.Log.LogInfo($"Restored equipment after respawn for {__instance.GetPlayerName()}");
+            }
+        }
+
+        #endregion
+
+        #region Hotbar Disable (Viking uses Ability Bar instead)
 
         /// <summary>
         /// Disable vanilla HotkeyBar Update to prevent 1-8 keybinds from working.
@@ -93,5 +186,7 @@ namespace Viking.Patches
             Plugin.Log.LogDebug($"Blocked vanilla UseHotbarItem for slot {index}");
             return false;
         }
+
+        #endregion
     }
 }

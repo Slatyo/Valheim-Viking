@@ -13,6 +13,7 @@ namespace Viking
 {
     [BepInPlugin(PluginGUID, PluginName, PluginVersion)]
     [BepInDependency(Jotunn.Main.ModGuid)]
+    [BepInDependency("com.slatyo.state")]
     [BepInDependency("com.slatyo.vital")]
     [BepInDependency("com.slatyo.munin", BepInDependency.DependencyFlags.SoftDependency)]
     [BepInDependency("com.slatyo.prime", BepInDependency.DependencyFlags.SoftDependency)]
@@ -57,7 +58,7 @@ namespace Viking
             // Initialize talent tree definitions
             TalentTreeManager.Initialize();
 
-            // Initialize player data storage (registers with VitalDataStore)
+            // Initialize player data storage (registers with State)
             VikingDataStore.Initialize();
 
             // Initialize network RPCs

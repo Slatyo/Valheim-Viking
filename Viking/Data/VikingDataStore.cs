@@ -1,23 +1,25 @@
 using System;
+using State;
 using Vital.Core;
-using Vital.Data;
 
 namespace Viking.Data
 {
     /// <summary>
-    /// Viking-specific data storage wrapper around VitalDataStore.
+    /// Viking-specific data storage wrapper around State.Store.
     /// </summary>
     public static class VikingDataStore
     {
         public const string MODULE_ID = "viking";
+        public const string EQUIPMENT_MODULE_ID = "viking_equipment";
 
         /// <summary>
-        /// Initialize the Viking data module.
+        /// Initialize the Viking data modules.
         /// </summary>
         internal static void Initialize()
         {
-            VitalDataStore.Register<VikingPlayerData>(MODULE_ID);
-            Plugin.Log.LogInfo("Viking data module registered");
+            Store.Register<VikingPlayerData>(MODULE_ID);
+            Store.Register<VikingEquipmentData>(EQUIPMENT_MODULE_ID);
+            Plugin.Log.LogInfo("Viking data modules registered (talents + equipment)");
         }
 
         /// <summary>
@@ -26,7 +28,7 @@ namespace Viking.Data
         public static VikingPlayerData Get(Player player)
         {
             if (player == null) return null;
-            return VitalDataStore.Get<VikingPlayerData>(player, MODULE_ID);
+            return Store.Get<VikingPlayerData>(player, MODULE_ID);
         }
 
         /// <summary>
@@ -34,7 +36,7 @@ namespace Viking.Data
         /// </summary>
         public static VikingPlayerData Get(long playerId)
         {
-            return VitalDataStore.Get<VikingPlayerData>(playerId, MODULE_ID);
+            return Store.Get<VikingPlayerData>(playerId, MODULE_ID);
         }
 
         /// <summary>
@@ -42,7 +44,7 @@ namespace Viking.Data
         /// </summary>
         public static void MarkDirty(Player player)
         {
-            VitalDataStore.MarkDirty(player, MODULE_ID);
+            Store.MarkDirty(player, MODULE_ID);
         }
 
         /// <summary>
@@ -50,7 +52,7 @@ namespace Viking.Data
         /// </summary>
         public static void MarkDirty(long playerId)
         {
-            VitalDataStore.MarkDirty(playerId, MODULE_ID);
+            Store.MarkDirty(playerId, MODULE_ID);
         }
 
         /// <summary>
@@ -76,5 +78,42 @@ namespace Viking.Data
             var data = Get(player);
             return data?.SpentPoints ?? 0;
         }
+
+        #region Equipment Data Access
+
+        /// <summary>
+        /// Get equipment data for a player.
+        /// </summary>
+        public static VikingEquipmentData GetEquipment(Player player)
+        {
+            if (player == null) return null;
+            return Store.Get<VikingEquipmentData>(player, EQUIPMENT_MODULE_ID);
+        }
+
+        /// <summary>
+        /// Get equipment data for a player by ID.
+        /// </summary>
+        public static VikingEquipmentData GetEquipment(long playerId)
+        {
+            return Store.Get<VikingEquipmentData>(playerId, EQUIPMENT_MODULE_ID);
+        }
+
+        /// <summary>
+        /// Mark equipment data as dirty (triggers sync).
+        /// </summary>
+        public static void MarkEquipmentDirty(Player player)
+        {
+            Store.MarkDirty(player, EQUIPMENT_MODULE_ID);
+        }
+
+        /// <summary>
+        /// Mark equipment data as dirty by player ID.
+        /// </summary>
+        public static void MarkEquipmentDirty(long playerId)
+        {
+            Store.MarkDirty(playerId, EQUIPMENT_MODULE_ID);
+        }
+
+        #endregion
     }
 }
