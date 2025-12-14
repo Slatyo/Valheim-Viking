@@ -1,23 +1,19 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Reflection;
 using UnityEngine;
+using Viking.Data;
 
 namespace Viking.Core
 {
     /// <summary>
-    /// Manages a separate inventory for equipped items.
-    /// This frees up main inventory slots when items are equipped.
-    /// Equipment is stored in a hidden inventory that persists with the player.
+    /// Manages equipment and inventory persistence via VitalDataStore.
+    /// This ensures server-authoritative storage that persists across logouts.
     /// </summary>
     public class EquipmentStorage : MonoBehaviour
     {
         private static EquipmentStorage _instance;
         public static EquipmentStorage Instance => _instance;
-
-        // The hidden inventory for equipped items (8 slots for different equipment types)
-        private Inventory _equipmentInventory;
 
         // Slot mapping for equipment types
         public const int SLOT_HELMET = 0;
@@ -29,14 +25,13 @@ namespace Viking.Core
         public const int SLOT_WEAPON_LEFT = 6;  // Shield or second weapon
         public const int SLOT_AMMO = 7;
 
-        // Custom save key for equipment inventory
-        private const string SAVE_KEY = "VikingEquipment";
+        private Player _player;
+        private bool _isLoading = false;
 
         private void Awake()
         {
             _instance = this;
-            // Create equipment inventory: 8 slots wide, 1 row
-            _equipmentInventory = new Inventory("VikingEquipment", null, 8, 1);
+            _player = GetComponent<Player>();
         }
 
         private void OnDestroy()
@@ -81,214 +76,344 @@ namespace Viking.Core
             };
         }
 
-        /// <summary>
-        /// Moves an item from player inventory to equipment storage.
-        /// Called after equipping.
-        /// </summary>
-        public bool MoveToEquipment(Player player, ItemDrop.ItemData item)
-        {
-            if (player == null || item == null || _equipmentInventory == null) return false;
-
-            int slot = GetSlotForItemType(item.m_shared.m_itemType);
-            if (slot < 0)
-            {
-                Plugin.Log.LogDebug($"Item type {item.m_shared.m_itemType} has no equipment slot, skipping");
-                return false;
-            }
-
-            var playerInventory = player.GetInventory();
-            if (playerInventory == null) return false;
-
-            // Check if there's already an item in this slot
-            var existingItem = _equipmentInventory.GetItemAt(slot, 0);
-            if (existingItem != null)
-            {
-                // Move existing item back to player inventory first
-                if (!MoveToInventory(player, existingItem))
-                {
-                    Plugin.Log.LogWarning($"Failed to move existing equipped item back to inventory");
-                    return false;
-                }
-            }
-
-            // Remove from player inventory (don't destroy the item data)
-            playerInventory.RemoveItem(item);
-
-            // Add to equipment storage at the correct slot position
-            // Directly add to inventory list to preserve grid position
-            item.m_gridPos = new Vector2i(slot, 0);
-            AddItemDirect(_equipmentInventory, item);
-
-            Plugin.Log.LogDebug($"Moved {item.m_shared.m_name} (type: {item.m_shared.m_itemType}) to equipment slot {slot}");
-            return true;
-        }
+        #region Save/Load via VitalDataStore
 
         /// <summary>
-        /// Moves an item from equipment storage back to player inventory.
-        /// Called before unequipping.
-        /// </summary>
-        public bool MoveToInventory(Player player, ItemDrop.ItemData item)
-        {
-            if (player == null || item == null || _equipmentInventory == null) return false;
-
-            var playerInventory = player.GetInventory();
-            if (playerInventory == null) return false;
-
-            // Find an empty slot in player inventory
-            Vector2i emptySlot = FindEmptySlot(playerInventory);
-            if (emptySlot.x < 0)
-            {
-                Plugin.Log.LogWarning("No empty inventory slot for unequipped item");
-                return false;
-            }
-
-            // Remove from equipment storage
-            _equipmentInventory.RemoveItem(item);
-
-            // Add to player inventory
-            item.m_gridPos = emptySlot;
-            playerInventory.AddItem(item);
-
-            Plugin.Log.LogDebug($"Moved {item.m_shared.m_name} back to inventory at ({emptySlot.x}, {emptySlot.y})");
-            return true;
-        }
-
-        /// <summary>
-        /// Gets the item in a specific equipment slot.
-        /// </summary>
-        public ItemDrop.ItemData GetEquippedItem(int slot)
-        {
-            return _equipmentInventory?.GetItemAt(slot, 0);
-        }
-
-        /// <summary>
-        /// Gets all equipped items.
-        /// </summary>
-        public List<ItemDrop.ItemData> GetAllEquippedItems()
-        {
-            return _equipmentInventory?.GetAllItems() ?? new List<ItemDrop.ItemData>();
-        }
-
-        /// <summary>
-        /// Saves equipment inventory to player's custom data.
+        /// Saves equipment and inventory to VitalDataStore.
+        /// Equipment is saved from EquipmentInventory, bag items from main inventory.
+        /// Only runs on server.
         /// </summary>
         public void Save(Player player)
         {
-            if (player == null || _equipmentInventory == null) return;
+            if (player == null) return;
+            if (!ZNet.instance.IsServer())
+            {
+                Plugin.Log.LogDebug("EquipmentStorage.Save skipped - not server");
+                return;
+            }
 
             try
             {
-                var pkg = new ZPackage();
-                _equipmentInventory.Save(pkg);
-                string base64 = Convert.ToBase64String(pkg.GetArray());
-                player.m_customData[SAVE_KEY] = base64;
-                Plugin.Log.LogDebug($"Saved equipment inventory ({_equipmentInventory.GetAllItems().Count} items)");
+                var data = VikingDataStore.GetEquipment(player);
+                if (data == null)
+                {
+                    Plugin.Log.LogWarning("Failed to get equipment data for save");
+                    return;
+                }
+
+                data.Clear();
+
+                // Save equipment from EquipmentInventory
+                var equipInv = EquipmentInventory.Instance;
+                if (equipInv != null)
+                {
+                    for (int slot = 0; slot < 8; slot++)
+                    {
+                        var item = equipInv.GetItemInSlot(slot);
+                        if (item != null)
+                        {
+                            var serialized = SerializeItem(item);
+                            if (serialized != null)
+                            {
+                                data.Equipment[slot] = serialized;
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    // Fallback: Save from Humanoid fields (for backward compatibility)
+                    SaveEquipmentSlot(player, data, "m_helmetItem", SLOT_HELMET);
+                    SaveEquipmentSlot(player, data, "m_chestItem", SLOT_CHEST);
+                    SaveEquipmentSlot(player, data, "m_legItem", SLOT_LEGS);
+                    SaveEquipmentSlot(player, data, "m_shoulderItem", SLOT_SHOULDER);
+                    SaveEquipmentSlot(player, data, "m_utilityItem", SLOT_UTILITY);
+                    SaveEquipmentSlot(player, data, "m_rightItem", SLOT_WEAPON_RIGHT);
+                    SaveEquipmentSlot(player, data, "m_leftItem", SLOT_WEAPON_LEFT);
+                    SaveEquipmentSlot(player, data, "m_ammoItem", SLOT_AMMO);
+                    SaveEquipmentSlotIfEmpty(player, data, "m_hiddenRightItem", SLOT_WEAPON_RIGHT);
+                    SaveEquipmentSlotIfEmpty(player, data, "m_hiddenLeftItem", SLOT_WEAPON_LEFT);
+                }
+
+                // Save main inventory (bag only - equipped items are in EquipmentInventory)
+                var inventory = player.GetInventory();
+                if (inventory != null)
+                {
+                    foreach (var item in inventory.GetAllItems())
+                    {
+                        var serialized = SerializeItem(item);
+                        if (serialized != null)
+                        {
+                            data.Inventory.Add(serialized);
+                        }
+                    }
+                }
+
+                VikingDataStore.MarkEquipmentDirty(player);
+                Plugin.Log.LogInfo($"Saved equipment ({data.GetEquippedCount()} equipped, {data.GetInventoryCount()} bag) for {player.GetPlayerName()}");
             }
             catch (Exception ex)
             {
-                Plugin.Log.LogError($"Failed to save equipment inventory: {ex.Message}");
+                Plugin.Log.LogError($"Failed to save equipment: {ex.Message}");
             }
         }
 
         /// <summary>
-        /// Loads equipment inventory from player's custom data.
+        /// Loads equipment and inventory from VitalDataStore.
+        /// Equipment goes to EquipmentInventory, bag items go to main inventory.
         /// </summary>
         public void Load(Player player)
         {
-            if (player == null || _equipmentInventory == null) return;
+            if (player == null) return;
+            if (_isLoading)
+            {
+                Plugin.Log.LogDebug("Load already in progress, skipping");
+                return;
+            }
 
             try
             {
-                if (player.m_customData.TryGetValue(SAVE_KEY, out string base64) && !string.IsNullOrEmpty(base64))
-                {
-                    byte[] data = Convert.FromBase64String(base64);
-                    var pkg = new ZPackage(data);
-                    _equipmentInventory.Load(pkg);
-                    Plugin.Log.LogDebug($"Loaded equipment inventory ({_equipmentInventory.GetAllItems().Count} items)");
+                _isLoading = true;
 
-                    // Re-equip all items
-                    ReequipAllItems(player);
+                var data = VikingDataStore.GetEquipment(player);
+                if (data == null)
+                {
+                    Plugin.Log.LogDebug("No equipment data to load");
+                    return;
+                }
+
+                // Check if there's any data to restore
+                if (data.GetEquippedCount() == 0 && data.GetInventoryCount() == 0)
+                {
+                    Plugin.Log.LogDebug("Equipment data is empty, nothing to restore");
+                    return;
+                }
+
+                var playerInv = player.GetInventory();
+                if (playerInv == null)
+                {
+                    Plugin.Log.LogWarning("Player inventory is null");
+                    return;
+                }
+
+                var equipInv = EquipmentInventory.Instance;
+
+                // Set processing flag to prevent equip patches from triggering
+                equipInv?.SetProcessing(true);
+
+                try
+                {
+                    // Clear inventories
+                    if (ZNet.instance.IsServer())
+                    {
+                        playerInv.RemoveAll();
+                        equipInv?.Clear();
+                    }
+
+                    // Restore main inventory (bag items)
+                    foreach (var serialized in data.Inventory)
+                    {
+                        var item = DeserializeItem(serialized);
+                        if (item != null)
+                        {
+                            item.m_gridPos = new Vector2i(serialized.GridX, serialized.GridY);
+
+                            if (!playerInv.AddItem(item))
+                            {
+                                var emptySlot = FindEmptySlot(playerInv);
+                                if (emptySlot.x >= 0)
+                                {
+                                    item.m_gridPos = emptySlot;
+                                    playerInv.AddItem(item);
+                                }
+                                else
+                                {
+                                    Plugin.Log.LogWarning($"No space in bag for item: {serialized.Prefab}");
+                                }
+                            }
+                        }
+                    }
+
+                    // Restore equipment to EquipmentInventory and set Humanoid fields
+                    foreach (var kvp in data.Equipment)
+                    {
+                        int slot = kvp.Key;
+                        var serialized = kvp.Value;
+
+                        var item = DeserializeItem(serialized);
+                        if (item != null)
+                        {
+                            // Add to equipment inventory
+                            if (equipInv != null)
+                            {
+                                equipInv.AddItemDirect(item, slot);
+                            }
+
+                            // Set Humanoid field directly
+                            EquipItemDirect(player, item, slot);
+                        }
+                    }
+
+                    // Update visuals
+                    player.SetupEquipment();
+
+                    Plugin.Log.LogInfo($"Loaded equipment ({data.GetEquippedCount()} equipped, {data.GetInventoryCount()} bag) for {player.GetPlayerName()}");
+                }
+                finally
+                {
+                    // Always clear processing flag
+                    equipInv?.SetProcessing(false);
                 }
             }
             catch (Exception ex)
             {
-                Plugin.Log.LogError($"Failed to load equipment inventory: {ex.Message}");
+                Plugin.Log.LogError($"Failed to load equipment: {ex.Message}");
+            }
+            finally
+            {
+                _isLoading = false;
             }
         }
 
-        /// <summary>
-        /// Re-equips all items from equipment storage after loading.
-        /// </summary>
-        private void ReequipAllItems(Player player)
-        {
-            if (player == null) return;
+        #endregion
 
-            foreach (var item in _equipmentInventory.GetAllItems())
-            {
-                // Use reflection or Humanoid method to equip without triggering our patches
-                EquipItemDirect(player, item);
-            }
-        }
+        #region Item Serialization
 
         /// <summary>
-        /// Directly equips an item without moving it (used during load).
+        /// Serializes an ItemDrop.ItemData to SerializedItem.
         /// </summary>
-        private void EquipItemDirect(Player player, ItemDrop.ItemData item)
+        private VikingEquipmentData.SerializedItem SerializeItem(ItemDrop.ItemData item)
         {
-            if (player == null || item == null) return;
+            if (item == null || item.m_dropPrefab == null) return null;
 
-            // Set the appropriate equipment slot on Humanoid using reflection (fields are protected)
-            string fieldName = item.m_shared.m_itemType switch
+            var serialized = new VikingEquipmentData.SerializedItem
             {
-                ItemDrop.ItemData.ItemType.Helmet => "m_helmetItem",
-                ItemDrop.ItemData.ItemType.Chest => "m_chestItem",
-                ItemDrop.ItemData.ItemType.Legs => "m_legItem",
-                ItemDrop.ItemData.ItemType.Shoulder => "m_shoulderItem",
-                ItemDrop.ItemData.ItemType.Utility => "m_utilityItem",
-                ItemDrop.ItemData.ItemType.Shield => "m_leftItem",
-                ItemDrop.ItemData.ItemType.OneHandedWeapon => "m_rightItem",
-                ItemDrop.ItemData.ItemType.TwoHandedWeapon => "m_rightItem",
-                ItemDrop.ItemData.ItemType.TwoHandedWeaponLeft => "m_rightItem",
-                ItemDrop.ItemData.ItemType.Bow => "m_rightItem",
-                ItemDrop.ItemData.ItemType.Tool => "m_rightItem",
-                ItemDrop.ItemData.ItemType.Torch => "m_rightItem",
-                ItemDrop.ItemData.ItemType.Ammo => "m_ammoItem",
-                _ => null
+                Prefab = item.m_dropPrefab.name,
+                Stack = item.m_stack,
+                Durability = item.m_durability,
+                Quality = item.m_quality,
+                Variant = item.m_variant,
+                CrafterId = item.m_crafterID,
+                CrafterName = item.m_crafterName ?? "",
+                GridX = item.m_gridPos.x,
+                GridY = item.m_gridPos.y,
+                CustomData = new Dictionary<string, string>()
             };
 
-            if (fieldName != null)
+            // Copy custom data (for Affix mod, etc.)
+            if (item.m_customData != null)
             {
-                SetHumanoidEquipmentField(player, fieldName, item);
+                foreach (var kvp in item.m_customData)
+                {
+                    serialized.CustomData[kvp.Key] = kvp.Value;
+                }
             }
 
-            // Setup visual equipment
-            player.SetupEquipment();
+            return serialized;
         }
 
-        // Cache for Humanoid equipment fields
-        private static readonly Dictionary<string, FieldInfo> _humanoidFields = new();
-
-        private static void SetHumanoidEquipmentField(Humanoid humanoid, string fieldName, ItemDrop.ItemData item)
+        /// <summary>
+        /// Deserializes a SerializedItem back to ItemDrop.ItemData.
+        /// </summary>
+        private ItemDrop.ItemData DeserializeItem(VikingEquipmentData.SerializedItem serialized)
         {
-            if (!_humanoidFields.TryGetValue(fieldName, out var field))
-            {
-                field = typeof(Humanoid).GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
-                _humanoidFields[fieldName] = field;
-            }
+            if (serialized == null || string.IsNullOrEmpty(serialized.Prefab)) return null;
 
-            field?.SetValue(humanoid, item);
+            try
+            {
+                // Get the prefab from ObjectDB
+                var prefab = ObjectDB.instance?.GetItemPrefab(serialized.Prefab);
+                if (prefab == null)
+                {
+                    Plugin.Log.LogWarning($"Item prefab not found: {serialized.Prefab}");
+                    return null;
+                }
+
+                // Get ItemDrop component
+                var itemDrop = prefab.GetComponent<ItemDrop>();
+                if (itemDrop == null)
+                {
+                    Plugin.Log.LogWarning($"ItemDrop component not found on prefab: {serialized.Prefab}");
+                    return null;
+                }
+
+                // Clone the item data
+                var item = itemDrop.m_itemData.Clone();
+                item.m_dropPrefab = prefab;
+                item.m_stack = serialized.Stack;
+                item.m_durability = serialized.Durability;
+                item.m_quality = serialized.Quality;
+                item.m_variant = serialized.Variant;
+                item.m_crafterID = serialized.CrafterId;
+                item.m_crafterName = serialized.CrafterName;
+                item.m_gridPos = new Vector2i(serialized.GridX, serialized.GridY);
+
+                // Restore custom data
+                if (serialized.CustomData != null && serialized.CustomData.Count > 0)
+                {
+                    item.m_customData ??= new Dictionary<string, string>();
+                    foreach (var kvp in serialized.CustomData)
+                    {
+                        item.m_customData[kvp.Key] = kvp.Value;
+                    }
+                }
+
+                return item;
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogError($"Failed to deserialize item {serialized.Prefab}: {ex.Message}");
+                return null;
+            }
+        }
+
+        #endregion
+
+        #region Equipment Slot Helpers
+
+        private void SaveEquipmentSlot(Player player, VikingEquipmentData data, string fieldName, int slot)
+        {
+            var item = GetHumanoidEquipmentField(player, fieldName);
+            if (item != null)
+            {
+                var serialized = SerializeItem(item);
+                if (serialized != null)
+                {
+                    data.Equipment[slot] = serialized;
+                }
+            }
+        }
+
+        private void SaveEquipmentSlotIfEmpty(Player player, VikingEquipmentData data, string fieldName, int slot)
+        {
+            // Only save hidden item if the slot is empty
+            if (data.Equipment.ContainsKey(slot)) return;
+            SaveEquipmentSlot(player, data, fieldName, slot);
+        }
+
+        private ItemDrop.ItemData FindItemInInventory(Inventory inventory, string prefabName, int quality)
+        {
+            foreach (var item in inventory.GetAllItems())
+            {
+                if (item.m_dropPrefab != null &&
+                    item.m_dropPrefab.name == prefabName &&
+                    item.m_quality == quality)
+                {
+                    return item;
+                }
+            }
+            return null;
         }
 
         /// <summary>
         /// Finds an empty slot in the inventory.
         /// </summary>
-        private static Vector2i FindEmptySlot(Inventory inventory)
+        private Vector2i FindEmptySlot(Inventory inventory)
         {
             int width = inventory.GetWidth();
             int height = inventory.GetHeight();
 
-            // Search rows 1+ first (row 0 is often hotbar)
-            for (int y = 1; y < height; y++)
+            for (int y = 0; y < height; y++)
             {
                 for (int x = 0; x < width; x++)
                 {
@@ -299,44 +424,82 @@ namespace Viking.Core
                 }
             }
 
-            // Then try row 0 (hotbar)
-            for (int x = 0; x < width; x++)
-            {
-                if (inventory.GetItemAt(x, 0) == null)
-                {
-                    return new Vector2i(x, 0);
-                }
-            }
-
             return new Vector2i(-1, -1);
         }
 
-        #region Reflection Helpers
+        private bool IsItemEquipped(Player player, ItemDrop.ItemData item)
+        {
+            if (player == null || item == null) return false;
 
-        private static FieldInfo _inventoryListField;
-        private static MethodInfo _changedMethod;
+            var helmet = GetHumanoidEquipmentField(player, "m_helmetItem");
+            var chest = GetHumanoidEquipmentField(player, "m_chestItem");
+            var legs = GetHumanoidEquipmentField(player, "m_legItem");
+            var shoulder = GetHumanoidEquipmentField(player, "m_shoulderItem");
+            var utility = GetHumanoidEquipmentField(player, "m_utilityItem");
+            var right = GetHumanoidEquipmentField(player, "m_rightItem");
+            var left = GetHumanoidEquipmentField(player, "m_leftItem");
+            var ammo = GetHumanoidEquipmentField(player, "m_ammoItem");
+            var hiddenRight = GetHumanoidEquipmentField(player, "m_hiddenRightItem");
+            var hiddenLeft = GetHumanoidEquipmentField(player, "m_hiddenLeftItem");
+
+            return item == helmet || item == chest || item == legs || item == shoulder ||
+                   item == utility || item == right || item == left || item == ammo ||
+                   item == hiddenRight || item == hiddenLeft;
+        }
 
         /// <summary>
-        /// Adds an item directly to the inventory's internal list, preserving grid position.
+        /// Directly equips an item by setting the Humanoid field.
         /// </summary>
-        private static void AddItemDirect(Inventory inventory, ItemDrop.ItemData item)
+        private void EquipItemDirect(Player player, ItemDrop.ItemData item, int slot)
         {
-            if (_inventoryListField == null)
+            if (player == null || item == null) return;
+
+            string fieldName = slot switch
             {
-                _inventoryListField = typeof(Inventory).GetField("m_inventory", BindingFlags.Instance | BindingFlags.NonPublic);
+                SLOT_HELMET => "m_helmetItem",
+                SLOT_CHEST => "m_chestItem",
+                SLOT_LEGS => "m_legItem",
+                SLOT_SHOULDER => "m_shoulderItem",
+                SLOT_UTILITY => "m_utilityItem",
+                SLOT_WEAPON_RIGHT => "m_rightItem",
+                SLOT_WEAPON_LEFT => "m_leftItem",
+                SLOT_AMMO => "m_ammoItem",
+                _ => null
+            };
+
+            if (fieldName != null)
+            {
+                SetHumanoidEquipmentField(player, fieldName, item);
+                item.m_equipped = true;
+            }
+        }
+
+        #endregion
+
+        #region Reflection Helpers
+
+        private static readonly Dictionary<string, FieldInfo> _humanoidFields = new();
+
+        private static ItemDrop.ItemData GetHumanoidEquipmentField(Humanoid humanoid, string fieldName)
+        {
+            if (!_humanoidFields.TryGetValue(fieldName, out var field))
+            {
+                field = typeof(Humanoid).GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                _humanoidFields[fieldName] = field;
             }
 
-            if (_changedMethod == null)
+            return field?.GetValue(humanoid) as ItemDrop.ItemData;
+        }
+
+        private static void SetHumanoidEquipmentField(Humanoid humanoid, string fieldName, ItemDrop.ItemData item)
+        {
+            if (!_humanoidFields.TryGetValue(fieldName, out var field))
             {
-                _changedMethod = typeof(Inventory).GetMethod("Changed", BindingFlags.Instance | BindingFlags.NonPublic);
+                field = typeof(Humanoid).GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                _humanoidFields[fieldName] = field;
             }
 
-            var list = _inventoryListField?.GetValue(inventory) as List<ItemDrop.ItemData>;
-            if (list != null)
-            {
-                list.Add(item);
-                _changedMethod?.Invoke(inventory, null);
-            }
+            field?.SetValue(humanoid, item);
         }
 
         #endregion

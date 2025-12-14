@@ -525,21 +525,37 @@ namespace Viking.UI
         {
             if (_player == null) return;
 
-            // Read directly from Humanoid equipment fields via reflection (they are protected)
-            // Also check hidden items for holstered weapons
-            UpdateEquipSlot("Head", GetEquipmentField(_player, "m_helmetItem"));
-            UpdateEquipSlot("Chest", GetEquipmentField(_player, "m_chestItem"));
-            UpdateEquipSlot("Legs", GetEquipmentField(_player, "m_legItem"));
-            UpdateEquipSlot("Cape", GetEquipmentField(_player, "m_shoulderItem"));
-            UpdateEquipSlot("Utility", GetEquipmentField(_player, "m_utilityItem"));
-            UpdateEquipSlot("Ammo", GetEquipmentField(_player, "m_ammoItem"));
+            // Read from EquipmentInventory (separate equipment storage)
+            var equipInv = Core.EquipmentInventory.Instance;
+            if (equipInv != null)
+            {
+                UpdateEquipSlot("Head", equipInv.GetItemInSlot(Core.EquipmentInventory.SLOT_HELMET));
+                UpdateEquipSlot("Chest", equipInv.GetItemInSlot(Core.EquipmentInventory.SLOT_CHEST));
+                UpdateEquipSlot("Legs", equipInv.GetItemInSlot(Core.EquipmentInventory.SLOT_LEGS));
+                UpdateEquipSlot("Cape", equipInv.GetItemInSlot(Core.EquipmentInventory.SLOT_SHOULDER));
+                UpdateEquipSlot("Utility", equipInv.GetItemInSlot(Core.EquipmentInventory.SLOT_UTILITY));
+                UpdateEquipSlot("Ammo", equipInv.GetItemInSlot(Core.EquipmentInventory.SLOT_AMMO));
+                UpdateEquipSlot("Weapon", equipInv.GetItemInSlot(Core.EquipmentInventory.SLOT_WEAPON_RIGHT));
+                UpdateEquipSlot("Shield", equipInv.GetItemInSlot(Core.EquipmentInventory.SLOT_WEAPON_LEFT));
+            }
+            else
+            {
+                // Fallback: Read from Humanoid fields if EquipmentInventory not available
+                UpdateEquipSlot("Head", GetEquipmentField(_player, "m_helmetItem"));
+                UpdateEquipSlot("Chest", GetEquipmentField(_player, "m_chestItem"));
+                UpdateEquipSlot("Legs", GetEquipmentField(_player, "m_legItem"));
+                UpdateEquipSlot("Cape", GetEquipmentField(_player, "m_shoulderItem"));
+                UpdateEquipSlot("Utility", GetEquipmentField(_player, "m_utilityItem"));
+                UpdateEquipSlot("Ammo", GetEquipmentField(_player, "m_ammoItem"));
 
-            // Check both visible and hidden items for weapons/shields (holstering moves to hidden)
-            var weapon = GetEquipmentField(_player, "m_rightItem") ?? GetEquipmentField(_player, "m_hiddenRightItem");
-            UpdateEquipSlot("Weapon", weapon);
+                var visibleWeapon = GetEquipmentField(_player, "m_rightItem");
+                var hiddenWeapon = GetEquipmentField(_player, "m_hiddenRightItem");
+                UpdateEquipSlot("Weapon", visibleWeapon ?? hiddenWeapon);
 
-            var shield = GetEquipmentField(_player, "m_leftItem") ?? GetEquipmentField(_player, "m_hiddenLeftItem");
-            UpdateEquipSlot("Shield", shield);
+                var visibleShield = GetEquipmentField(_player, "m_leftItem");
+                var hiddenShield = GetEquipmentField(_player, "m_hiddenLeftItem");
+                UpdateEquipSlot("Shield", visibleShield ?? hiddenShield);
+            }
         }
 
         // Cache reflection fields for performance
@@ -606,15 +622,8 @@ namespace Viking.UI
         {
             if (!_statTexts.TryGetValue(textId, out var text)) return;
 
-            // For resource stats, use the actual game values (vanilla + Prime modifiers via patches)
-            // rather than Prime's internal calculation (which uses an arbitrary base value)
-            float value = statId switch
-            {
-                "MaxHealth" => _player.GetMaxHealth(),
-                "MaxStamina" => _player.GetMaxStamina(),
-                "MaxEitr" => _player.GetMaxEitr(),
-                _ => PrimeAPI.Get(_player, statId)
-            };
+            // Prime syncs vanilla bases (food-based health, etc.) so PrimeAPI.Get() returns correct values
+            float value = PrimeAPI.Get(_player, statId);
 
             string formatted;
             if (isPercent)
