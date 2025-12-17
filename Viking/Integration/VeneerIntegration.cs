@@ -14,6 +14,7 @@ namespace Viking.Integration
         private static AbilityBarUI _abilityBarUI;
         private static CharacterWindow _characterWindow;
         private static VikingQuickBarExtension _quickBarExtension;
+        private static VikingHudExtension _hudExtension;
 
         /// <summary>Key to toggle talent tree UI.</summary>
         public static KeyCode TalentTreeKey = KeyCode.K;
@@ -28,6 +29,12 @@ namespace Viking.Integration
             VeneerAPI.DisableHotbar();
             _hotbarHidden = true;
             Plugin.Log.LogInfo("Disabled VeneerHotbar - Viking will provide action bar");
+
+            // Register HUD extension to replace VeneerUnitFrame with VikingPlayerFrame
+            // This MUST be registered before HUD is created
+            _hudExtension = new VikingHudExtension();
+            VeneerAPI.RegisterHudExtension(_hudExtension);
+            Plugin.Log.LogInfo("Registered VikingHudExtension - will replace VeneerUnitFrame");
 
             // Wait for Veneer to be ready to create our UI
             if (VeneerAPI.IsReady)
@@ -105,6 +112,13 @@ namespace Viking.Integration
             {
                 VeneerAPI.EnableHotbar();
                 _hotbarHidden = false;
+            }
+
+            // Unregister HUD extension
+            if (_hudExtension != null)
+            {
+                VeneerAPI.UnregisterHudExtension(_hudExtension);
+                _hudExtension = null;
             }
 
             if (_quickBarExtension != null)
@@ -217,9 +231,16 @@ namespace Viking.Integration
         /// </summary>
         public static void ToggleCharacterWindow()
         {
+            bool wasNull = _characterWindow == null;
+
             if (_characterWindow == null)
             {
+                Plugin.Log.LogDebug("[CharacterWindow] Creating window for first time...");
                 CreateCharacterWindow();
+                // On first creation, always show (VeneerAnchor may have made it visible during init)
+                // So we ensure it's shown, then return - don't toggle
+                _characterWindow.Show();
+                return;
             }
 
             _characterWindow.Toggle();
