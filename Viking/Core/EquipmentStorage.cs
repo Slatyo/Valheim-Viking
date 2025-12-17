@@ -80,12 +80,16 @@ namespace Viking.Core
 
         /// <summary>
         /// Saves equipment and inventory to VitalDataStore.
-        /// Equipment is saved from EquipmentInventory, bag items from main inventory.
+        /// Equipment is saved from EquipmentInventory (separate slots), bag items from main inventory.
         /// Only runs on server.
         /// </summary>
         public void Save(Player player)
         {
             if (player == null) return;
+
+            Plugin.Log.LogInfo($"EquipmentStorage.Save called for {player.GetPlayerName()} (ID: {player.GetPlayerID()})");
+            Plugin.Log.LogInfo($"  IsServer: {ZNet.instance?.IsServer()}, IsDedicated: {ZNet.instance?.IsDedicated()}");
+
             if (!ZNet.instance.IsServer())
             {
                 Plugin.Log.LogDebug("EquipmentStorage.Save skipped - not server");
@@ -103,7 +107,7 @@ namespace Viking.Core
 
                 data.Clear();
 
-                // Save equipment from EquipmentInventory
+                // Save equipment from EquipmentInventory (items are in separate slots)
                 var equipInv = EquipmentInventory.Instance;
                 if (equipInv != null)
                 {
@@ -116,13 +120,15 @@ namespace Viking.Core
                             if (serialized != null)
                             {
                                 data.Equipment[slot] = serialized;
+                                Plugin.Log.LogDebug($"Saved equipment slot {slot}: {item.m_shared.m_name}");
                             }
                         }
                     }
                 }
                 else
                 {
-                    // Fallback: Save from Humanoid fields (for backward compatibility)
+                    // Fallback: Save from Humanoid fields if EquipmentInventory not available
+                    Plugin.Log.LogWarning("EquipmentInventory not available, saving from Humanoid fields");
                     SaveEquipmentSlot(player, data, "m_helmetItem", SLOT_HELMET);
                     SaveEquipmentSlot(player, data, "m_chestItem", SLOT_CHEST);
                     SaveEquipmentSlot(player, data, "m_legItem", SLOT_LEGS);
@@ -135,7 +141,7 @@ namespace Viking.Core
                     SaveEquipmentSlotIfEmpty(player, data, "m_hiddenLeftItem", SLOT_WEAPON_LEFT);
                 }
 
-                // Save main inventory (bag only - equipped items are in EquipmentInventory)
+                // Save main inventory (bag items only - equipment is in separate EquipmentInventory)
                 var inventory = player.GetInventory();
                 if (inventory != null)
                 {
@@ -160,11 +166,14 @@ namespace Viking.Core
 
         /// <summary>
         /// Loads equipment and inventory from VitalDataStore.
-        /// Equipment goes to EquipmentInventory, bag items go to main inventory.
+        /// Equipment goes to EquipmentInventory (separate slots), bag items to main inventory.
         /// </summary>
         public void Load(Player player)
         {
             if (player == null) return;
+
+            Plugin.Log.LogInfo($"EquipmentStorage.Load called for {player.GetPlayerName()} (ID: {player.GetPlayerID()})");
+
             if (_isLoading)
             {
                 Plugin.Log.LogDebug("Load already in progress, skipping");
@@ -178,14 +187,16 @@ namespace Viking.Core
                 var data = VikingDataStore.GetEquipment(player);
                 if (data == null)
                 {
-                    Plugin.Log.LogDebug("No equipment data to load");
+                    Plugin.Log.LogInfo("No equipment data found for player");
                     return;
                 }
+
+                Plugin.Log.LogInfo($"Equipment data found: {data.GetEquippedCount()} equipped, {data.GetInventoryCount()} bag items");
 
                 // Check if there's any data to restore
                 if (data.GetEquippedCount() == 0 && data.GetInventoryCount() == 0)
                 {
-                    Plugin.Log.LogDebug("Equipment data is empty, nothing to restore");
+                    Plugin.Log.LogInfo("Equipment data is empty, nothing to restore");
                     return;
                 }
 
@@ -203,7 +214,7 @@ namespace Viking.Core
 
                 try
                 {
-                    // Clear inventories
+                    // Clear inventories on server
                     if (ZNet.instance.IsServer())
                     {
                         playerInv.RemoveAll();
@@ -234,7 +245,7 @@ namespace Viking.Core
                         }
                     }
 
-                    // Restore equipment to EquipmentInventory and set Humanoid fields
+                    // Restore equipment to EquipmentInventory (separate slots)
                     foreach (var kvp in data.Equipment)
                     {
                         int slot = kvp.Key;
@@ -243,21 +254,44 @@ namespace Viking.Core
                         var item = DeserializeItem(serialized);
                         if (item != null)
                         {
-                            // Add to equipment inventory
+                            // Add to EquipmentInventory at the correct slot
                             if (equipInv != null)
                             {
-                                equipInv.AddItemDirect(item, slot);
+                                if (equipInv.AddItemDirect(item, slot))
+                                {
+                                    // IMPORTANT: Get the item BACK from inventory - Valheim may clone it!
+                                    // We must use the same reference for both EquipmentInventory AND Humanoid fields
+                                    var storedItem = equipInv.GetItemInSlot(slot);
+                                    if (storedItem != null)
+                                    {
+                                        Plugin.Log.LogDebug($"Loaded equipment slot {slot}: {storedItem.m_shared.m_name}");
+                                        // Set Humanoid field with the STORED reference for consistency
+                                        EquipItemDirect(player, storedItem, slot);
+                                    }
+                                }
+                                else
+                                {
+                                    Plugin.Log.LogWarning($"Failed to add item to equipment slot {slot}: {serialized.Prefab}");
+                                    // Fallback: try to equip original item even if inventory add failed
+                                    EquipItemDirect(player, item, slot);
+                                }
                             }
-
-                            // Set Humanoid field directly
-                            EquipItemDirect(player, item, slot);
+                            else
+                            {
+                                // No equipment inventory - just set Humanoid field
+                                EquipItemDirect(player, item, slot);
+                            }
                         }
                     }
 
-                    // Update visuals
-                    player.SetupEquipment();
+                    // Update visuals via reflection (method is protected)
+                    _setupEquipmentMethod?.Invoke(player, null);
 
                     Plugin.Log.LogInfo($"Loaded equipment ({data.GetEquippedCount()} equipped, {data.GetInventoryCount()} bag) for {player.GetPlayerName()}");
+                }
+                catch (Exception ex)
+                {
+                    Plugin.Log.LogError($"Error during load: {ex.Message}");
                 }
                 finally
                 {
@@ -479,6 +513,9 @@ namespace Viking.Core
         #region Reflection Helpers
 
         private static readonly Dictionary<string, FieldInfo> _humanoidFields = new();
+        private static readonly MethodInfo _setupEquipmentMethod = typeof(Humanoid).GetMethod(
+            "SetupEquipment",
+            BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
 
         private static ItemDrop.ItemData GetHumanoidEquipmentField(Humanoid humanoid, string fieldName)
         {

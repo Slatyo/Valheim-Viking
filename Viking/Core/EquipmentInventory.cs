@@ -1,4 +1,5 @@
 using System;
+using System.Reflection;
 using UnityEngine;
 
 namespace Viking.Core
@@ -25,6 +26,14 @@ namespace Viking.Core
 
         private const int SLOT_COUNT = 8;
 
+        // Reflection for private Inventory.AddItem(item, amount, x, y)
+        private static readonly MethodInfo _addItemAtPositionMethod = typeof(Inventory).GetMethod(
+            "AddItem",
+            BindingFlags.Instance | BindingFlags.NonPublic,
+            null,
+            new[] { typeof(ItemDrop.ItemData), typeof(int), typeof(int), typeof(int) },
+            null);
+
         // Real Valheim Inventory for equipment (8 slots, 1 row)
         private Inventory _inventory;
         public Inventory Inventory => _inventory;
@@ -41,6 +50,16 @@ namespace Viking.Core
 
             // Create 8-slot inventory for equipment
             _inventory = new Inventory("Equipment", null, SLOT_COUNT, 1);
+
+            // Log reflection method status
+            if (_addItemAtPositionMethod != null)
+            {
+                Plugin.Log.LogDebug("EquipmentInventory: Reflection method found for AddItem(item, amount, x, y)");
+            }
+            else
+            {
+                Plugin.Log.LogWarning("EquipmentInventory: Could NOT find AddItem reflection method - slot positioning may fail!");
+            }
 
             Plugin.Log.LogDebug("EquipmentInventory created");
         }
@@ -140,10 +159,8 @@ namespace Viking.Core
                     Plugin.Log.LogDebug($"Removed {item.m_shared.m_name} from bag");
                 }
 
-                // Add to equipment inventory at the correct slot
-                // Set grid position first, then add (AddItem uses m_gridPos)
-                item.m_gridPos = new Vector2i(slot, 0);
-                if (_inventory.AddItem(item))
+                // Add to equipment inventory at the correct slot using reflection
+                if (AddItemAtPosition(_inventory, item, slot, 0))
                 {
                     Plugin.Log.LogDebug($"Moved {item.m_shared.m_name} to equipment slot {slot}");
                 }
@@ -228,6 +245,28 @@ namespace Viking.Core
         }
 
         /// <summary>
+        /// Adds an item to an inventory at a specific position using reflection.
+        /// </summary>
+        private bool AddItemAtPosition(Inventory inventory, ItemDrop.ItemData item, int x, int y)
+        {
+            if (_addItemAtPositionMethod == null)
+            {
+                Plugin.Log.LogError("Could not find Inventory.AddItem(item, amount, x, y) method");
+                return false;
+            }
+
+            try
+            {
+                return (bool)_addItemAtPositionMethod.Invoke(inventory, new object[] { item, item.m_stack, x, y });
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogError($"Failed to invoke AddItem via reflection: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
         /// Finds an empty slot in the inventory.
         /// </summary>
         private Vector2i FindEmptySlot(Inventory inventory)
@@ -283,9 +322,8 @@ namespace Viking.Core
             if (item == null) return false;
             if (slot < 0 || slot >= SLOT_COUNT) return false;
 
-            // Set grid position first, then add (AddItem uses m_gridPos)
-            item.m_gridPos = new Vector2i(slot, 0);
-            return _inventory.AddItem(item);
+            // Use position-aware AddItem via reflection to ensure item goes to exact slot
+            return AddItemAtPosition(_inventory, item, slot, 0);
         }
 
         /// <summary>

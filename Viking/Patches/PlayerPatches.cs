@@ -26,10 +26,10 @@ namespace Viking.Patches
             // Only on local player
             if (__instance != Player.m_localPlayer) return;
 
-            // Create EquipmentInventory component (must be before EquipmentStorage)
+            // Create EquipmentInventory component (separate equipment slots, frees bag space)
             EquipmentInventory.Create(__instance);
 
-            // Create EquipmentStorage component
+            // Create EquipmentStorage component (handles save/load)
             EquipmentStorage.Create(__instance);
 
             // Reapply all Viking talent modifiers
@@ -39,11 +39,39 @@ namespace Viking.Patches
                 Plugin.Log.LogInfo($"Reapplied talent modifiers for {__instance.GetPlayerName()}");
             }
 
-            // Subscribe to State data sync to load equipment after sync completes
+            // Subscribe to State data sync to load equipment after sync completes (for multiplayer clients)
             if (!_equipmentSyncSubscribed)
             {
                 Store.OnDataSynced += OnDataSynced;
                 _equipmentSyncSubscribed = true;
+            }
+
+            // In single-player or as server, load equipment directly (data already in memory)
+            if (ZNet.instance != null && ZNet.instance.IsServer())
+            {
+                // Delay slightly to ensure everything is initialized
+                __instance.StartCoroutine(DelayedEquipmentLoad(__instance));
+            }
+        }
+
+        private static System.Collections.IEnumerator DelayedEquipmentLoad(Player player)
+        {
+            // Wait a frame for everything to initialize
+            yield return null;
+            yield return null;
+
+            if (player == null) yield break;
+
+            Plugin.Log.LogInfo($"DelayedEquipmentLoad: Loading equipment for {player.GetPlayerName()}");
+
+            var storage = player.GetComponent<EquipmentStorage>();
+            if (storage != null)
+            {
+                storage.Load(player);
+            }
+            else
+            {
+                Plugin.Log.LogWarning("DelayedEquipmentLoad: EquipmentStorage component not found!");
             }
         }
 
