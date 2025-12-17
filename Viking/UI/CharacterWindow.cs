@@ -525,7 +525,7 @@ namespace Viking.UI
         {
             if (_player == null) return;
 
-            // Read from EquipmentInventory (separate equipment storage)
+            // Read from EquipmentInventory (separate equipment slots that don't use bag space)
             var equipInv = Core.EquipmentInventory.Instance;
             if (equipInv != null)
             {
